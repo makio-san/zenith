@@ -10,6 +10,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 use egui::{Align2, Color32, Event, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Vec2};
 
+use crate::input;
 use crate::pixelcat::Cat;
 use crate::stats::{self, Shared, fmt_bytes, fmt_rate, fmt_uptime};
 use crate::term::{Session, Size};
@@ -47,6 +48,9 @@ pub struct App {
     grid: Option<(Rect, f32, f32, usize, usize)>,
     selecting: bool,
     last_strike: f64,
+    mouse_btn: Option<u8>,
+    last_mouse_cell: Option<(usize, usize)>,
+    demo_sent: bool,
 }
 
 const ACTIONS: &[(&str, &str)] = &[
@@ -94,6 +98,9 @@ impl App {
             grid: None,
             selecting: false,
             last_strike: -10.0,
+            mouse_btn: None,
+            last_mouse_cell: None,
+            demo_sent: false,
         };
         app.new_tab(&ctx);
         app
@@ -138,6 +145,35 @@ impl App {
         }
     }
 
+    /// Keyboard and paste input: also jumps back to the live screen if the user had scrolled up.
+    fn user_input(&self, bytes: &[u8]) {
+        if let Some(t) = self.tabs.get(self.active) {
+            if let Ok(mut term) = t.session.term.lock() {
+                if term.grid().display_offset() != 0 {
+                    term.scroll_display(Scroll::Bottom);
+                }
+            }
+            t.session.write(bytes);
+        }
+    }
+
+    /// Terminal cell (column, row) under a screen position, if it is inside the text area.
+    fn cell_at(&self, pos: Pos2) -> Option<(usize, usize)> {
+        let (inner, cw, rh, cols, rows) = self.grid?;
+        if !inner.contains(pos) {
+            return None;
+        }
+        let col = (((pos.x - inner.left()) / cw) as usize).min(cols.saturating_sub(1));
+        let row = (((pos.y - inner.top()) / rh) as usize).min(rows.saturating_sub(1));
+        Some((col, row))
+    }
+
+    fn mouse_report(&self, mode: TermMode, code: u8, col: usize, row: usize, press: bool, m: Modifiers) {
+        if let Some(bytes) = input::encode_mouse(mode, code, col, row, press, m) {
+            self.write_active(&bytes);
+        }
+    }
+
     fn feed_active(&self, text: &str) {
         if let Some(t) = self.tabs.get(self.active) {
             if let Ok(mut term) = t.session.term.lock() {
@@ -155,8 +191,8 @@ impl App {
         let y = |t: &str| format!("\x1b[38;5;220m{t}\x1b[0m");
         let ram = if s.mem_total > 0 { s.mem_used as f32 / s.mem_total as f32 * 100.0 } else { 0.0 };
         let text = format!(
-            "\r\n{}\x1b[1;38;5;220mZENITH\x1b[0m ⚡ @ {}\r\n{}OS    {}\r\n{}CPU   {} · {} cores · {:.0}%\r\n            GPU   {}\r\n            RAM   {} · {:.0}% used\r\n\r\n",
-            y("    /\\_/\\   "), s.host,
+            "\r\n{}\x1b[1;38;5;220mZENITH\x1b[0m ⚡\r\n{}OS    {}\r\n{}CPU   {} · {} cores · {:.0}%\r\n            GPU   {}\r\n            RAM   {} · {:.0}% used\r\n\r\n",
+            y("    /\\_/\\   "),
             y("   ( -.- )z "), s.os,
             y("    > ^ <   "), s.cpu_name, s.cores, s.cpu,
             s.gpu_name,
@@ -206,17 +242,24 @@ impl App {
     // ---------- Keyboard ----------
     fn handle_input(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
-        let app_cursor = self
+        let mode = self
             .tabs
             .get(self.active)
-            .and_then(|t| t.session.term.lock().ok().map(|term| term.mode().contains(TermMode::APP_CURSOR)))
-            .unwrap_or(false);
+            .and_then(|t| t.session.term.lock().ok().map(|term| *term.mode()))
+            .unwrap_or(TermMode::empty());
+        let app_cursor = mode.contains(TermMode::APP_CURSOR);
+        let live_mods = ctx.input(|i| i.modifiers);
 
         for ev in events {
             match ev {
-                Event::Text(s) | Event::Paste(s) => {
+                Event::Text(s) => {
                     if !self.palette.open {
-                        self.write_active(s.as_bytes());
+                        self.user_input(s.as_bytes());
+                    }
+                }
+                Event::Paste(s) => {
+                    if !self.palette.open {
+                        self.user_input(&input::wrap_paste(&s, mode.contains(TermMode::BRACKETED_PASTE)));
                     }
                 }
                 Event::Key { key, pressed: true, modifiers, .. } => {
@@ -229,7 +272,7 @@ impl App {
                         continue;
                     }
                     if let Some(bytes) = key_bytes(key, modifiers, app_cursor) {
-                        self.write_active(&bytes);
+                        self.user_input(&bytes);
                     }
                 }
                 Event::Screenshot { image, .. } => {
@@ -242,14 +285,71 @@ impl App {
                         std::process::exit(0);
                     }
                 }
-                Event::MouseWheel { delta, .. } => {
-                    if let Some(t) = self.tabs.get(self.active) {
-                        if let Ok(mut term) = t.session.term.lock() {
-                            let lines = (delta.y / 2.0).round() as i32;
-                            if lines != 0 {
-                                term.scroll_display(Scroll::Delta(lines));
+                Event::MouseWheel { delta, modifiers, .. } => {
+                    let lines = (delta.y / 2.0).round() as i32;
+                    if lines == 0 || self.palette.open {
+                        continue;
+                    }
+                    let steps = lines.unsigned_abs().min(5);
+                    if mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift {
+                        // The running program (vim, tmux, htop...) owns the mouse: report wheel buttons.
+                        if let Some((c, r)) = ctx.input(|i| i.pointer.hover_pos()).and_then(|p| self.cell_at(p)) {
+                            let code = if lines > 0 { 64 } else { 65 };
+                            for _ in 0..steps {
+                                self.mouse_report(mode, code, c, r, true, modifiers);
                             }
                         }
+                    } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) && !modifiers.shift {
+                        // Full-screen apps without mouse mode (less, man): the wheel acts as arrow keys.
+                        let seq: &[u8] = match (lines > 0, app_cursor) {
+                            (true, true) => b"\x1bOA",
+                            (true, false) => b"\x1b[A",
+                            (false, true) => b"\x1bOB",
+                            (false, false) => b"\x1b[B",
+                        };
+                        for _ in 0..steps {
+                            self.write_active(seq);
+                        }
+                    } else if let Some(t) = self.tabs.get(self.active) {
+                        if let Ok(mut term) = t.session.term.lock() {
+                            term.scroll_display(Scroll::Delta(lines));
+                        }
+                    }
+                }
+                Event::PointerButton { pos, button, pressed, modifiers } => {
+                    if !mode.intersects(TermMode::MOUSE_MODE) || modifiers.shift || self.palette.open {
+                        if !pressed {
+                            self.mouse_btn = None;
+                        }
+                        continue;
+                    }
+                    let Some((c, r)) = self.cell_at(pos) else { continue };
+                    let code = match button {
+                        egui::PointerButton::Primary => 0,
+                        egui::PointerButton::Middle => 1,
+                        egui::PointerButton::Secondary => 2,
+                        _ => continue,
+                    };
+                    self.mouse_btn = if pressed { Some(code) } else { None };
+                    self.last_mouse_cell = Some((c, r));
+                    self.mouse_report(mode, code, c, r, pressed, modifiers);
+                }
+                Event::PointerMoved(pos) => {
+                    if !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) || live_mods.shift || self.palette.open {
+                        continue;
+                    }
+                    let Some((c, r)) = self.cell_at(pos) else { continue };
+                    if self.last_mouse_cell == Some((c, r)) {
+                        continue;
+                    }
+                    let code = match self.mouse_btn {
+                        Some(b) => Some(b + 32),
+                        None if mode.contains(TermMode::MOUSE_MOTION) => Some(35),
+                        None => None,
+                    };
+                    if let Some(code) = code {
+                        self.last_mouse_cell = Some((c, r));
+                        self.mouse_report(mode, code, c, r, true, live_mods);
                     }
                 }
                 _ => {}
@@ -352,8 +452,35 @@ impl App {
         tab.session.resize_shared(Size { cols, rows });
         let Ok(mut term) = tab.session.term.lock() else { return };
         let offset = term.grid().display_offset() as i32;
+        let mode = *term.mode();
+        let mods = ui.ctx().input(|i| i.modifiers);
+        // When a program has turned on mouse reporting, it owns the mouse; Shift gives selection back to us.
+        let reporting = mode.intersects(TermMode::MOUSE_MODE) && !mods.shift;
 
-        if resp.triple_clicked() {
+        // ⌘-hover highlights a link, ⌘-click opens it.
+        let mut link: Option<(i32, usize, usize, String)> = None;
+        if mods.command {
+            if let Some((c, r)) = pointer.and_then(|p| self.cell_at(p)) {
+                let ncols = term.columns().min(cols);
+                let line = Line(r as i32 - offset);
+                let text: Vec<char> = (0..ncols).map(|x| term.grid()[Point::new(line, Column(x))].c).collect();
+                link = input::find_url(&text, c).map(|(a, b, u)| (r as i32, a, b, u));
+            }
+        }
+        let mut opened = false;
+        if resp.clicked() && mods.command {
+            if let Some((_, _, _, url)) = &link {
+                input::open_url(url);
+                opened = true;
+            }
+        }
+        if link.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if reporting || opened {
+            // The running program owns the mouse, or a link was just opened: no selection change.
+        } else if resp.triple_clicked() {
             if let Some((p, s)) = pointer.and_then(|p| self.point_at(p, offset)) {
                 term.selection = Some(Selection::new(SelectionType::Lines, p, s));
             }
@@ -436,6 +563,11 @@ impl App {
             run.push(c);
         }
         flush(&mut run, run_line, run_col, run_color);
+
+        if let Some((r, a, b, _)) = &link {
+            let y = inner.top() + (*r as f32 + 1.0) * rh - 1.0;
+            painter.hline((inner.left() + *a as f32 * cw)..=(inner.left() + (*b as f32 + 1.0) * cw), y, Stroke::new(1.5f32, theme::ACC));
+        }
 
         if cursor.shape != CursorShape::Hidden && blink_on {
             let line = cursor.point.line.0 + offset;
@@ -558,8 +690,8 @@ impl App {
                 ui.label(egui::RichText::new(l).font(mono(18.0)).color(c));
             }
         });
-        framed(ui, "Keys", 150.0, |ui| {
-            for (k, v) in [("⌘T", "new tab"), ("⌘W", "close tab"), ("⌘1-9", "switch tab"), ("⌘S", "sidebar"), ("⌘K", "palette"), ("⌘C", "copy selection")] {
+        framed(ui, "Keys", 175.0, |ui| {
+            for (k, v) in [("⌘T", "new tab"), ("⌘W", "close tab"), ("⌘1-9", "switch tab"), ("⌘S", "sidebar"), ("⌘K", "palette"), ("⌘C", "copy selection"), ("⌘-click", "open link")] {
                 leader_row(ui, k, v, theme::FG, false);
             }
         });
@@ -567,10 +699,7 @@ impl App {
 
     // ---------- Status line ----------
     fn paint_status(&mut self, ui: &mut egui::Ui) {
-        let (cpu, host) = {
-            let s = self.stats.lock().unwrap();
-            (s.cpu, s.host.clone())
-        };
+        let cpu = self.stats.lock().unwrap().cpu;
         let t = self.t();
         let striking = t - self.last_strike < 0.7;
         let cat = if striking { "( °o° )⚡" } else if cpu > 45.0 { "( o.o )" } else { "( -.- )z" };
@@ -581,7 +710,7 @@ impl App {
             ui.label(egui::RichText::new("zenitsu").font(mono(18.0)).color(theme::DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new("⚡").font(FontId::proportional(14.0)).color(theme::ACC));
-                ui.label(egui::RichText::new(format!("{host} · {name} · {cols}×{rows}")).font(mono(18.0)).color(theme::FG2));
+                ui.label(egui::RichText::new(format!("{name} · {cols}×{rows}")).font(mono(18.0)).color(theme::FG2));
             });
         });
     }
@@ -726,7 +855,15 @@ impl eframe::App for App {
         }
 
         // Dev helper: ZENITH_SHOT=/path.png makes the app save a frame of its own window and quit.
-        if std::env::var_os("ZENITH_SHOT").is_some() && (2.4..2.5).contains(&t) {
+        // Dev helper: ZENITH_DEMO="cmd" types a command into the first tab one second after start.
+        if let Ok(cmd) = std::env::var("ZENITH_DEMO") {
+            if !self.demo_sent && t > 1.0 {
+                self.demo_sent = true;
+                self.write_active(format!("{cmd}\r").as_bytes());
+            }
+        }
+        let shot_at: f64 = std::env::var("ZENITH_SHOT_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(2.4);
+        if std::env::var_os("ZENITH_SHOT").is_some() && (shot_at..shot_at + 0.1).contains(&t) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
