@@ -85,6 +85,22 @@ impl Session {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "Zenith");
+        // GUI apps often start without a UTF-8 locale; zsh then shows multibyte input as <0096> escapes.
+        let is_utf8 = |v: &str| {
+            let u = v.to_ascii_uppercase();
+            u.contains("UTF-8") || u.contains("UTF8")
+        };
+        let locale_ok = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+            .is_some_and(|v| is_utf8(&v));
+        if !locale_ok {
+            cmd.env("LANG", "en_US.UTF-8");
+            cmd.env("LC_CTYPE", "en_US.UTF-8");
+            if std::env::var_os("LC_ALL").is_some() {
+                cmd.env("LC_ALL", "en_US.UTF-8");
+            }
+        }
         if let Some(home) = std::env::var_os("HOME") {
             cmd.cwd(home);
         }
