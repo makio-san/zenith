@@ -1,0 +1,16 @@
+[package]
+name = "zenith"
+version = "0.1.0"
+edition = "2024"
+description = "A textmode-styled desktop terminal with a pixel cat and live system stats"
+license = "MIT"
+
+[dependencies]
+alacritty_terminal = "0.24"
+chrono = "0.4"
+eframe = "0.29"
+egui = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
+portable-pty = "0.8"
+rustix = { version = "0.38", features = ["std", "termios", "pty", "process"] }
+sysinfo = "0.32"
