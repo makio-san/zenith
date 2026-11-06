@@ -2,7 +2,7 @@
 
 A textmode terminal with my cat Zenitsu, written in Rust.
 
-![Zenith screenshot](docs/screenshot.png)
+![Zenith screenshot](docs/screenshot-v2.png)
 
 Zenith is a real terminal emulator (it runs your shell in a PTY and parses output with the same engine as Alacritty) wrapped in a retro textmode interface: black background, sand-coloured pixel text, one-pixel frames with little square knobs, bracketed hotkeys and dotted leader rows.
 
