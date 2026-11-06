@@ -6,7 +6,7 @@ A textmode terminal with my cat Zenitsu, written in Rust.
 
 Zenith is a real terminal emulator (it runs your shell in a PTY and parses output with the same engine as Alacritty) wrapped in a retro textmode interface: black background, sand-coloured pixel text, one-pixel frames with little square knobs, bracketed hotkeys and dotted leader rows.
 
-On the left lives a live system panel. On top of it sits a pixel-art Zenitsu who dozes with a little `zZz` while the machine is idle, wakes up when the CPU gets busy, and flinches with a ⚡ when lightning strikes (click the cat or the `[⚡]` button).
+On the left lives a live system panel. On top of it sits a pixel-art Zenitsu, drawn like the real cat: a yellow tabby with no eyebrows, one squinted eye clouded by a cataract, and a short tail stump (she lost the tip as a kitten). She wags what is left of her tail faster when the CPU gets busy, and flinches with a ⚡ when lightning strikes (click the cat or the `[⚡]` button).
 
 ## Features
 
@@ -18,7 +18,7 @@ On the left lives a live system panel. On top of it sits a pixel-art Zenitsu who
 - **Links:** `⌘`-click an `http(s)` URL in the output to open it.
 - **System sidebar:** CPU, RAM, GPU, temperature, network, disk, uptime, per-core bars and dithered history "skylines". `⌘S` hides it.
 - **Command palette:** `⌘K`.
-- **Pixel Zenitsu:** sleeping, awake and startled states.
+- **Pixel Zenitsu:** always watching, tail speed follows CPU load, startled by lightning.
 
 ## Keys
 
