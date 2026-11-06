@@ -66,7 +66,7 @@ const ACTIONS: &[(&str, &str)] = &[
 
 const WELCOME: &str = concat!(
     "\x1b[38;5;220m  /\\_/\\ \x1b[0m   \x1b[1;38;5;220mZENITH\x1b[0m ⚡\r\n",
-    "\x1b[38;5;220m ( -.- )z\x1b[0m   \x1b[2m[K] palette  [S] sidebar  [T] new tab\x1b[0m\r\n",
+    "\x1b[38;5;220m ( o.- ) \x1b[0m   \x1b[2m[K] palette  [S] sidebar  [T] new tab\x1b[0m\r\n",
     "\x1b[38;5;220m  > ^ <  \x1b[0m\r\n\r\n"
 );
 
@@ -193,7 +193,7 @@ impl App {
         let text = format!(
             "\r\n{}\x1b[1;38;5;220mZENITH\x1b[0m ⚡\r\n{}OS    {}\r\n{}CPU   {} · {} cores · {:.0}%\r\n            GPU   {}\r\n            RAM   {} · {:.0}% used\r\n\r\n",
             y("    /\\_/\\   "),
-            y("   ( -.- )z "), s.os,
+            y("   ( o.- )  "), s.os,
             y("    > ^ <   "), s.cpu_name, s.cores, s.cpu,
             s.gpu_name,
             fmt_bytes(s.mem_total), ram,
@@ -434,6 +434,7 @@ impl App {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter_at(rect);
+        let pal: &theme::Palette = &theme::TEXTMODE;
         painter.rect_filled(rect, 0.0, theme::BG);
 
         let font = mono(self.font_px);
@@ -512,7 +513,7 @@ impl App {
         let mut run = String::new();
         let mut run_col = 0usize;
         let mut run_line = -1i32;
-        let mut run_color = theme::FG;
+        let mut run_color = pal.fg;
         let flush = |run: &mut String, line: i32, col: usize, color: Color32| {
             if run.is_empty() {
                 return;
@@ -534,16 +535,16 @@ impl App {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let bold = flags.contains(Flags::BOLD);
-            let mut fgc = theme::color(fg, bold);
+            let mut fgc = theme::color(fg, bold, pal);
             if flags.contains(Flags::DIM) {
-                fgc = theme::FG2;
+                fgc = pal.fg2;
             }
             let cell_rect = Rect::from_min_size(Pos2::new(inner.left() + col as f32 * cw, inner.top() + line as f32 * rh), Vec2::new(cw, rh));
             let selected = selection.map_or(false, |r| r.contains(Point::new(Line(line - offset), Column(col))));
             if selected {
-                painter.rect_filled(cell_rect, 0.0, theme::SELECTION);
+                painter.rect_filled(cell_rect, 0.0, pal.selection);
             } else if !matches!(bg, Color::Named(NamedColor::Background)) {
-                painter.rect_filled(cell_rect, 0.0, theme::color(bg, false));
+                painter.rect_filled(cell_rect, 0.0, theme::color(bg, false, pal));
             }
             if flags.contains(Flags::UNDERLINE) {
                 painter.hline(cell_rect.x_range(), cell_rect.bottom() - 1.5, Stroke::new(1.0f32, fgc));
@@ -576,16 +577,16 @@ impl App {
                 let r = Rect::from_min_size(pos, Vec2::new(cw, rh));
                 match cursor.shape {
                     CursorShape::Beam => {
-                        painter.rect_filled(Rect::from_min_size(pos, Vec2::new(2.0, rh)), 0.0, theme::FG);
+                        painter.rect_filled(Rect::from_min_size(pos, Vec2::new(2.0, rh)), 0.0, pal.fg);
                     }
                     CursorShape::Underline => {
-                        painter.rect_filled(Rect::from_min_size(Pos2::new(pos.x, pos.y + rh - 2.0), Vec2::new(cw, 2.0)), 0.0, theme::FG);
+                        painter.rect_filled(Rect::from_min_size(Pos2::new(pos.x, pos.y + rh - 2.0), Vec2::new(cw, 2.0)), 0.0, pal.fg);
                     }
                     _ => {
-                        painter.rect_filled(r, 0.0, theme::FG);
+                        painter.rect_filled(r, 0.0, pal.fg);
                         let under = term.grid()[cursor.point].c;
                         if under != ' ' {
-                            painter.text(pos, Align2::LEFT_TOP, under, font.clone(), theme::INK);
+                            painter.text(pos, Align2::LEFT_TOP, under, font.clone(), pal.cursor_text);
                         }
                     }
                 }
@@ -615,11 +616,11 @@ impl App {
         if cat_resp.clicked() {
             self.strike();
         }
-        let cat_box = Rect::from_min_size(cat_rect.min, Vec2::new(116.0, 100.0));
+        let cat_box = Rect::from_min_size(cat_rect.min, Vec2::new(124.0, 100.0));
         Cat::paint(ui.painter(), cat_box, t, load, striking);
         let tx = cat_box.right() + 10.0;
         ui.painter().text(Pos2::new(tx, cat_rect.top() + 22.0), Align2::LEFT_CENTER, "ZENITH ⚡", mono(30.0), theme::ACC);
-        let mood = if striking { "zenitsu is startled!" } else if load > 0.45 { "zenitsu is awake" } else { "zenitsu is asleep" };
+        let mood = if striking { "zenitsu is startled!" } else if load > 0.45 { "zenitsu is alert" } else { "zenitsu is watching" };
         ui.painter().text(Pos2::new(tx, cat_rect.top() + 50.0), Align2::LEFT_CENTER, mood, mono(18.0), theme::FG2);
         ui.painter().text(Pos2::new(tx, cat_rect.top() + 70.0), Align2::LEFT_CENTER, chrono::Local::now().format("%H:%M · %a %d %b").to_string(), mono(18.0), theme::DIM);
         ui.add_space(14.0);
@@ -702,7 +703,7 @@ impl App {
         let cpu = self.stats.lock().unwrap().cpu;
         let t = self.t();
         let striking = t - self.last_strike < 0.7;
-        let cat = if striking { "( °o° )⚡" } else if cpu > 45.0 { "( o.o )" } else { "( -.- )z" };
+        let cat = if striking { "( °o° )⚡" } else if cpu > 45.0 { "( o.o )" } else { "( o.- ) " };
         let name = self.tabs.get(self.active).map(|t| t.name.clone()).unwrap_or_default();
         let (cols, rows) = self.grid.map(|g| (g.3, g.4)).unwrap_or((0, 0));
         ui.horizontal(|ui| {
@@ -776,7 +777,8 @@ impl eframe::App for App {
         self.handle_input(ctx);
         let t = self.t();
 
-        egui::CentralPanel::default()
+        {
+            egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::BG))
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
@@ -836,6 +838,7 @@ impl eframe::App for App {
                 let mut term_ui = ui.new_child(egui::UiBuilder::new().max_rect(term_rect).layout(egui::Layout::top_down(egui::Align::Min)));
                 self.paint_terminal(&mut term_ui);
             });
+        }
 
         self.paint_palette(ctx);
 

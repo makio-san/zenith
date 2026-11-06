@@ -15,7 +15,7 @@ pub const SELECTION: Color32 = Color32::from_rgb(70, 52, 30);
 
 pub const FONT: &str = "VT323";
 
-/// ANSI palette warmed to sit on the sand/black scheme.
+/// ANSI palette for the terminal, warmed to sit on sand and black.
 const NAMED: [Color32; 16] = [
     Color32::from_rgb(30, 24, 18),
     Color32::from_rgb(255, 96, 70),
@@ -35,33 +35,47 @@ const NAMED: [Color32; 16] = [
     Color32::from_rgb(255, 240, 215),
 ];
 
-pub fn color(c: Color, bold: bool) -> Color32 {
+/// Colours the terminal grid is drawn with; one set per skin.
+pub struct Palette {
+    pub fg: Color32,
+    pub fg2: Color32,
+    pub bright: Color32,
+    pub bg: Color32,
+    pub selection: Color32,
+    pub cursor_text: Color32,
+    warm_grey: bool,
+    ansi: [Color32; 16],
+}
+
+pub const TEXTMODE: Palette = Palette { fg: FG, fg2: FG2, bright: NAMED[15], bg: BG, selection: SELECTION, cursor_text: INK, warm_grey: true, ansi: NAMED };
+
+pub fn color(c: Color, bold: bool, p: &Palette) -> Color32 {
     match c {
-        Color::Named(n) => named(n, bold),
+        Color::Named(n) => named(n, bold, p),
         Color::Spec(rgb) => Color32::from_rgb(rgb.r, rgb.g, rgb.b),
-        Color::Indexed(i) => indexed(i),
+        Color::Indexed(i) => indexed(i, p),
     }
 }
 
-fn named(n: NamedColor, bold: bool) -> Color32 {
+fn named(n: NamedColor, bold: bool, p: &Palette) -> Color32 {
     use NamedColor::*;
     let i = match n {
         Black => 0, Red => 1, Green => 2, Yellow => 3, Blue => 4, Magenta => 5, Cyan => 6, White => 7,
         BrightBlack => 8, BrightRed => 9, BrightGreen => 10, BrightYellow => 11, BrightBlue => 12,
         BrightMagenta => 13, BrightCyan => 14, BrightWhite => 15,
-        Foreground => return if bold { NAMED[15] } else { FG },
-        Background => return BG,
-        Cursor => return FG,
-        DimBlack | DimRed | DimGreen | DimYellow | DimBlue | DimMagenta | DimCyan | DimWhite | DimForeground => return FG2,
-        BrightForeground => return NAMED[15],
+        Foreground => return if bold { p.bright } else { p.fg },
+        Background => return p.bg,
+        Cursor => return p.fg,
+        DimBlack | DimRed | DimGreen | DimYellow | DimBlue | DimMagenta | DimCyan | DimWhite | DimForeground => return p.fg2,
+        BrightForeground => return p.bright,
     };
     let i = if bold && i < 8 { i + 8 } else { i };
-    NAMED[i]
+    p.ansi[i]
 }
 
-pub fn indexed(i: u8) -> Color32 {
+pub fn indexed(i: u8, p: &Palette) -> Color32 {
     match i {
-        0..=15 => NAMED[i as usize],
+        0..=15 => p.ansi[i as usize],
         16..=231 => {
             let i = i - 16;
             let (r, g, b) = (i / 36, (i % 36) / 6, i % 6);
@@ -70,7 +84,7 @@ pub fn indexed(i: u8) -> Color32 {
         }
         _ => {
             let v = 8 + (i - 232) * 10;
-            Color32::from_rgb(v, (v as f32 * 0.8) as u8, (v as f32 * 0.6) as u8)
+            if p.warm_grey { Color32::from_rgb(v, (v as f32 * 0.8) as u8, (v as f32 * 0.6) as u8) } else { Color32::from_rgb(v, v, (v as f32 * 1.1).min(255.0) as u8) }
         }
     }
 }
